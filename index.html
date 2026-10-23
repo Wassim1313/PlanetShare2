@@ -108,7 +108,12 @@ async function loadMe() {
     $("who").textContent = `${me.name} · ${me.used_km2_month} / ${me.max_km2_month} km² used this month · area per order ${me.min_km2_order ? me.min_km2_order + "–" : "≤ "}${me.max_km2_order} km²`;
     $("quota").style.width = Math.min(100, 100 * me.used_km2_month / me.max_km2_month) + "%";
     $("bundle").innerHTML = Object.entries(me.bundles).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
-  } catch (e) { $("who").innerHTML = `<span style="color:var(--bad)">Access denied — use the link you were given.</span>`; }
+  } catch (e) {
+    const why = !TOKEN ? "This link has no access code — open the full link you were given (it ends with ?token=…)."
+      : /invalid|disabled/.test(e.message) ? "Access denied — this access code is not valid or was disabled."
+      : "Server temporarily unreachable — wait a minute and reload the page.";
+    $("who").innerHTML = `<span style="color:var(--bad)">${why}</span>`;
+  }
 }
 $("bsearch").onclick = async () => {
   $("smsg").className = "msg"; $("smsg").textContent = "Searching…"; $("results").innerHTML = ""; sel.clear(); updOrder(); foot.clearLayers();
