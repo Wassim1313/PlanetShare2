@@ -41,9 +41,9 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
   <h2>1 · Area</h2>
   <div class="mute">Draw a polygon or rectangle on the map (toolbar, top-left). Area: <b id="area">–</b></div>
 
-  <div class="tabs"><button id="tScenes" class="on">Scenes (single images)</button><button id="tMosaics">Mosaics (monthly)</button></div>
+  <div class="tabs"><button id="tMosaics" class="on">Mosaics (monthly)</button><button id="tScenes">Images (single scenes)</button></div>
 
-  <div id="pScenes">
+  <div id="pScenes" hidden>
   <h2>2 · Search</h2>
   <div class="mute">Only images older than ~30 days can be downloaded; newer ones are hidden.</div>
   <div class="row"><div><label>From</label><input type="date" id="from"></div><div><label>To</label><input type="date" id="to"></div></div>
@@ -63,7 +63,7 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
   <div id="orders" style="margin-top:8px"></div>
   </div>
 
-  <div id="pMosaics" hidden>
+  <div id="pMosaics">
   <h2>2 · Choose mosaic</h2>
   <div class="mute">Cloud-free monthly/quarterly composites, ~4.8 m. Downloaded as GeoTIFF tiles ("quads", ~17 × 17 km each) — no waiting.</div>
   <label>Type</label><select id="mfam"></select>
@@ -225,7 +225,7 @@ $("bquads").onclick = async () => {
       <a href="${API}/api/quad/${m.id}/${q.id}.tif?token=${encodeURIComponent(TOKEN)}">⬇ GeoTIFF</a></div>`).join("");
   } catch (e) { $("qmsg").className = "msg bad"; $("qmsg").textContent = e.message; }
 };
-loadMe(); loadOrders();
+loadMe(); loadOrders(); loadMosaics();
 </script>
 </body>
 </html>
