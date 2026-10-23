@@ -24,6 +24,10 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
 .scene.sel{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}.scene img{width:64px;height:64px;object-fit:cover;border-radius:4px;background:var(--line)}
 .scene div{font-size:12px}.msg{margin-top:8px;font-size:13px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}
 .order{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:6px;font-size:12px}.order a{display:block;color:var(--acc);word-break:break-all}
+.tabs{display:flex;gap:0;margin-top:16px;border:1px solid var(--acc);border-radius:7px;overflow:hidden}
+.tabs button{margin:0;border-radius:0;background:transparent;color:var(--acc)}.tabs button.on{background:var(--acc);color:#fff}
+.quad{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;font-size:12px}
+.quad a{flex:none;padding:5px 10px;border-radius:5px;background:var(--acc);color:#fff;text-decoration:none;font-weight:600}
 .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc)}
 </style>
 </head>
@@ -37,6 +41,9 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
   <h2>1 · Area</h2>
   <div class="mute">Draw a polygon or rectangle on the map (toolbar, top-left). Area: <b id="area">–</b></div>
 
+  <div class="tabs"><button id="tScenes" class="on">Scenes (single images)</button><button id="tMosaics">Mosaics (monthly)</button></div>
+
+  <div id="pScenes">
   <h2>2 · Search</h2>
   <div class="mute">Only images older than ~30 days can be downloaded; newer ones are hidden.</div>
   <div class="row"><div><label>From</label><input type="date" id="from"></div><div><label>To</label><input type="date" id="to"></div></div>
@@ -54,6 +61,18 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
   <div class="mute">Orders take ~5–30 min. Links appear here when ready (valid for a limited time).</div>
   <button class="sec" id="brefresh">Refresh</button>
   <div id="orders" style="margin-top:8px"></div>
+  </div>
+
+  <div id="pMosaics" hidden>
+  <h2>2 · Choose mosaic</h2>
+  <div class="mute">Cloud-free monthly/quarterly composites, ~4.8 m. Downloaded as GeoTIFF tiles ("quads", ~17 × 17 km each) — no waiting.</div>
+  <label>Type</label><select id="mfam"></select>
+  <label>Month / period</label><select id="mdate"></select>
+  <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="mprev" checked style="width:auto"> Preview on map</label>
+  <button id="bquads" disabled>Find tiles for my area</button>
+  <div id="qmsg" class="msg"></div>
+  <div id="quads"></div>
+  </div>
 </div>
 <div id="map"></div>
 </div>
@@ -106,6 +125,7 @@ async function loadMe() {
   try {
     me = await api("/api/me");
     $("who").textContent = `${me.name} · ${me.used_km2_month} / ${me.max_km2_month} km² used this month · area per order ${me.min_km2_order ? me.min_km2_order + "–" : "≤ "}${me.max_km2_order} km²`;
+    $("who").textContent += ` · mosaic tiles ${me.used_quads_month}/${me.max_quads_month}`;
     $("quota").style.width = Math.min(100, 100 * me.used_km2_month / me.max_km2_month) + "%";
     $("bundle").innerHTML = Object.entries(me.bundles).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
   } catch (e) {
@@ -156,6 +176,55 @@ async function loadOrders() {
   } catch (e) { $("orders").textContent = e.message; }
 }
 $("brefresh").onclick = loadOrders;
+
+// ---------------- mosaics
+let MOS = null, prevLayer = null;
+const quadLayer = L.geoJSON(null, {style: {color: "#f59e0b", weight: 2, fillOpacity: .08}}).addTo(map);
+function tab(m) {
+  $("tScenes").classList.toggle("on", m === "s"); $("tMosaics").classList.toggle("on", m === "m");
+  $("pScenes").hidden = m !== "s"; $("pMosaics").hidden = m !== "m";
+  foot.clearLayers(); quadLayer.clearLayers();
+  if (m === "m" && !MOS) loadMosaics(); else showPreview();
+}
+$("tScenes").onclick = () => tab("s"); $("tMosaics").onclick = () => tab("m");
+async function loadMosaics() {
+  $("qmsg").className = "msg"; $("qmsg").textContent = "Loading mosaics…";
+  try {
+    MOS = await api("/api/mosaics"); $("qmsg").textContent = "";
+    $("mfam").innerHTML = Object.entries(MOS.families).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+    fillDates();
+  } catch (e) { $("qmsg").className = "msg bad"; $("qmsg").textContent = e.message; }
+}
+function fillDates() {
+  const f = $("mfam").value;
+  $("mdate").innerHTML = MOS.mosaics.filter(m => m.family === f).map(m => {
+    const lbl = f === "global_quarterly" ? m.name.match(/\d{4}q\d/)[0].toUpperCase() : m.date.slice(0, 7);
+    return `<option value="${m.id}">${lbl}</option>`; }).join("");
+  showPreview(); updQuadBtn();
+}
+function curMosaic() { return MOS && MOS.mosaics.find(m => m.id === $("mdate").value); }
+function showPreview() {
+  if (prevLayer) { map.removeLayer(prevLayer); prevLayer = null; }
+  const m = curMosaic();
+  if (!m || !$("mprev").checked || $("pMosaics").hidden) return;
+  prevLayer = L.tileLayer(`${API}/api/mosaic_tile/${m.name}/{z}/{x}/{y}.png?token=${encodeURIComponent(TOKEN)}`,
+    {maxZoom: 18, maxNativeZoom: 15, attribution: "Planet basemap"}).addTo(map);
+}
+function updQuadBtn() { $("bquads").disabled = !(aoi && curMosaic()); }
+$("mfam").onchange = fillDates; $("mdate").onchange = () => { showPreview(); $("quads").innerHTML = ""; quadLayer.clearLayers(); };
+$("mprev").onchange = showPreview;
+map.on("draw:created draw:edited draw:deleted", () => setTimeout(updQuadBtn, 0));
+$("bquads").onclick = async () => {
+  $("qmsg").className = "msg"; $("qmsg").textContent = "Searching tiles…"; $("quads").innerHTML = ""; quadLayer.clearLayers();
+  try {
+    const m = curMosaic(), r = await api("/api/quads", {aoi, mosaic_id: m.id});
+    $("qmsg").textContent = `${r.quads.length} tile(s) cover your area · ${r.quads_left_month} tile downloads left this month.`;
+    r.quads.forEach(q => { const [a, b, c, d] = q.bbox;
+      quadLayer.addData({type: "Polygon", coordinates: [[[a, b], [c, b], [c, d], [a, d], [a, b]]]}); });
+    $("quads").innerHTML = r.quads.map(q => `<div class="quad"><div><b>${q.id}</b><br>${q.km2} km²${q.coverage != null ? " · " + q.coverage + "% data" : ""}</div>
+      <a href="${API}/api/quad/${m.id}/${q.id}.tif?token=${encodeURIComponent(TOKEN)}">⬇ GeoTIFF</a></div>`).join("");
+  } catch (e) { $("qmsg").className = "msg bad"; $("qmsg").textContent = e.message; }
+};
 loadMe(); loadOrders();
 </script>
 </body>
