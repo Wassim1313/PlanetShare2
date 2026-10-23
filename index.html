@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Imagery Download</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1d2330;--mute:#6b7380;--line:#e2e5ea;--acc:#2563eb;--ok:#15803d;--bad:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#12151b;--panel:#1b1f27;--ink:#e6e8ec;--mute:#9099a6;--line:#2c323d;--acc:#60a5fa;--ok:#4ade80;--bad:#f87171}}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}
+#wrap{display:flex;height:100%}#side{width:380px;max-width:100%;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:16px}
+#map{flex:1}
+@media (max-width:760px){#wrap{flex-direction:column}#side{width:100%;height:55%;order:2;border-right:0;border-top:1px solid var(--line)}#map{height:45%}}
+h1{font-size:17px;margin:0 0 2px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);margin:18px 0 8px}
+.mute{color:var(--mute);font-size:12px}label{display:block;font-size:12px;color:var(--mute);margin-top:8px}
+input,select{width:100%;padding:7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+.row{display:flex;gap:8px}.row>*{flex:1}
+button{margin-top:10px;width:100%;padding:9px;border:0;border-radius:6px;background:var(--acc);color:#fff;font-weight:600;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+.scene{display:flex;gap:8px;padding:6px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;cursor:pointer;align-items:center}
+.scene.sel{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}.scene img{width:64px;height:64px;object-fit:cover;border-radius:4px;background:var(--line)}
+.scene div{font-size:12px}.msg{margin-top:8px;font-size:13px}.msg.bad{color:var(--bad)}.msg.ok{color:var(--ok)}
+.order{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:6px;font-size:12px}.order a{display:block;color:var(--acc);word-break:break-all}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc)}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="side">
+  <h1>Satellite imagery download</h1>
+  <div class="mute" id="who">Loading…</div>
+  <div class="bar"><i id="quota" style="width:0"></i></div>
+
+  <h2>1 · Area</h2>
+  <div class="mute">Draw a polygon or rectangle on the map (toolbar, top-left). Area: <b id="area">–</b></div>
+
+  <h2>2 · Search</h2>
+  <div class="mute">Only images older than ~30 days can be downloaded; newer ones are hidden.</div>
+  <div class="row"><div><label>From</label><input type="date" id="from"></div><div><label>To</label><input type="date" id="to"></div></div>
+  <label>Max cloud cover: <span id="cv">20</span>%</label><input type="range" id="cloud" min="0" max="100" value="20">
+  <button id="bsearch" disabled>Search scenes</button>
+  <div id="smsg" class="msg"></div>
+  <div id="results"></div>
+
+  <h2>3 · Order</h2>
+  <label>Product</label><select id="bundle"></select>
+  <button id="border" disabled>Order selected (0)</button>
+  <div id="omsg" class="msg"></div>
+
+  <h2>4 · My downloads</h2>
+  <div class="mute">Orders take ~5–30 min. Links appear here when ready (valid for a limited time).</div>
+  <button class="sec" id="brefresh">Refresh</button>
+  <div id="orders" style="margin-top:8px"></div>
+</div>
+<div id="map"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+let API = ""; // same origin when served by the proxy; GitHub Pages reads the live address from config.json
+const ready = location.hostname.endsWith("github.io")
+  ? fetch("config.json?t=" + Date.now()).then(r => r.json()).then(c => { API = c.api.replace(/\/$/, ""); }).catch(() => {})
+  : Promise.resolve();
+const $ = id => document.getElementById(id);
+async function api(path, body) {
+  await ready;
+  const r = await fetch(API + path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN),
+    body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
+  const j = await r.json().catch(() => ({error: "server error " + r.status}));
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+const map = L.map("map").setView([31.6, -7.9], 7);
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {maxZoom: 19, attribution: "Esri World Imagery"}).addTo(map);
+const drawn = new L.FeatureGroup().addTo(map), foot = L.geoJSON(null, {style: {color: "#f59e0b", weight: 1, fillOpacity: .05}}).addTo(map);
+map.addControl(new L.Control.Draw({edit: {featureGroup: drawn}, draw: {polyline: false, circle: false, marker: false, circlemarker: false,
+  polygon: {shapeOptions: {color: "#2563eb"}}, rectangle: {shapeOptions: {color: "#2563eb"}}}}));
+let aoi = null, me = null, sel = new Set(), scenes = [];
+function km2(g) { // spherical polygon area, first ring
+  const R = 6371.0088, c = g.coordinates[0]; let s = 0;
+  for (let i = 0; i < c.length - 1; i++) { const [x1, y1] = c[i], [x2, y2] = c[i + 1];
+    s += (x2 - x1) * Math.PI / 180 * (2 + Math.sin(y1 * Math.PI / 180) + Math.sin(y2 * Math.PI / 180)); }
+  return Math.abs(s * R * R / 2);
+}
+function setAoi(layer) {
+  drawn.clearLayers(); drawn.addLayer(layer); aoi = layer.toGeoJSON().geometry;
+  $("area").textContent = km2(aoi).toFixed(1) + " km²"; $("bsearch").disabled = false; updOrder();
+}
+map.on(L.Draw.Event.CREATED, e => setAoi(e.layer));
+map.on(L.Draw.Event.EDITED, () => drawn.eachLayer(setAoi));
+map.on(L.Draw.Event.DELETED, () => { aoi = null; $("area").textContent = "–"; $("bsearch").disabled = true; updOrder(); });
+const today = new Date(Date.now() - 31 * 864e5), past = new Date(Date.now() - 120 * 864e5);
+$("to").value = today.toISOString().slice(0, 10); $("from").value = past.toISOString().slice(0, 10);
+$("cloud").oninput = () => $("cv").textContent = $("cloud").value;
+function updOrder() {
+  $("border").textContent = `Order selected (${sel.size})` + (aoi && sel.size ? ` · ${(km2(aoi) * sel.size).toFixed(1)} km²` : "");
+  const a = aoi ? km2(aoi) : 0;
+  $("border").disabled = !(aoi && sel.size) || (me && (a < me.min_km2_order || a > me.max_km2_order));
+}
+async function loadMe() {
+  try {
+    me = await api("/api/me");
+    $("who").textContent = `${me.name} · ${me.used_km2_month} / ${me.max_km2_month} km² used this month · area per order ${me.min_km2_order ? me.min_km2_order + "–" : "≤ "}${me.max_km2_order} km²`;
+    $("quota").style.width = Math.min(100, 100 * me.used_km2_month / me.max_km2_month) + "%";
+    $("bundle").innerHTML = Object.entries(me.bundles).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+  } catch (e) { $("who").innerHTML = `<span style="color:var(--bad)">Access denied — use the link you were given.</span>`; }
+}
+$("bsearch").onclick = async () => {
+  $("smsg").className = "msg"; $("smsg").textContent = "Searching…"; $("results").innerHTML = ""; sel.clear(); updOrder(); foot.clearLayers();
+  try {
+    const fc = await api("/api/search", {aoi, date_from: $("from").value, date_to: $("to").value, max_cloud: $("cloud").value / 100});
+    scenes = fc.features;
+    $("smsg").textContent = `${scenes.length} scenes. Click to select (max 20).`;
+    $("results").innerHTML = scenes.map((f, i) => { const p = f.properties;
+      return `<div class="scene" data-i="${i}"><img loading="lazy" src="${API}/api/thumb/${p.id}?token=${encodeURIComponent(TOKEN)}">
+        <div><b>${p.acquired.slice(0, 16).replace("T", " ")}</b><br>cloud ${(p.cloud * 100).toFixed(0)}% · clear ${p.clear ?? "–"}%<br>
+        covers ${p.aoi_cover == null ? "–" : (p.aoi_cover * 100).toFixed(0) + "%"} of area · ${p.instrument || ""}</div></div>`; }).join("");
+    document.querySelectorAll(".scene").forEach(el => {
+      el.onmouseenter = () => { foot.clearLayers(); foot.addData(scenes[el.dataset.i]); };
+      el.onclick = () => { const id = scenes[el.dataset.i].properties.id;
+        if (sel.has(id)) sel.delete(id); else if (sel.size < 20) sel.add(id);
+        el.classList.toggle("sel", sel.has(id)); updOrder(); };
+    });
+  } catch (e) { $("smsg").className = "msg bad"; $("smsg").textContent = e.message; }
+};
+$("border").onclick = async () => {
+  $("border").disabled = true; $("omsg").className = "msg"; $("omsg").textContent = "Submitting…";
+  try {
+    const r = await api("/api/order", {aoi, ids: [...sel], bundle: $("bundle").value});
+    $("omsg").className = "msg ok"; $("omsg").textContent = `Order placed (${r.km2} km²). See “My downloads”.`;
+    loadMe(); loadOrders();
+  } catch (e) { $("omsg").className = "msg bad"; $("omsg").textContent = e.message; }
+  updOrder();
+};
+async function loadOrders() {
+  try {
+    const {orders} = await api("/api/orders");
+    if (!orders.length) { $("orders").innerHTML = '<div class="mute">No orders yet.</div>'; return; }
+    $("orders").innerHTML = orders.map(o => `<div class="order" id="o-${o.id}"><b>${o.created.slice(0, 16).replace("T", " ")}</b> · ${o.ids.length} scene(s) · ${o.km2} km²<div class="st mute">checking…</div></div>`).join("");
+    for (const o of orders.slice(0, 10)) {
+      api("/api/order/" + o.id).then(s => {
+        const el = document.querySelector(`#o-${o.id} .st`);
+        el.innerHTML = `status: <b>${s.state}</b>` + (s.files.length ? s.files.map(f => `<a href="${f.url}" target="_blank" rel="noopener">⬇ ${f.name}</a>`).join("") : "");
+      }).catch(e => { document.querySelector(`#o-${o.id} .st`).textContent = e.message; });
+    }
+  } catch (e) { $("orders").textContent = e.message; }
+}
+$("brefresh").onclick = loadOrders;
+loadMe(); loadOrders();
+</script>
+</body>
+</html>
