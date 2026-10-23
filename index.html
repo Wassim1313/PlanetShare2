@@ -28,15 +28,44 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
 .tabs button{margin:0;border-radius:0;background:transparent;color:var(--acc)}.tabs button.on{background:var(--acc);color:#fff}
 .quad{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;margin-bottom:6px;font-size:12px}
 .quad a{flex:none;padding:5px 10px;border-radius:5px;background:var(--acc);color:#fff;text-decoration:none;font-weight:600}
+#login{position:fixed;inset:0;z-index:2000;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px}
+#login form{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px}
+.urow{border:1px solid var(--line);border-radius:6px;padding:7px 8px;margin-bottom:6px;font-size:12px}
+.urow.off{opacity:.5}.urow .acts{display:flex;gap:6px;margin-top:5px}
+.urow .acts button{margin:0;padding:4px 8px;width:auto;font-size:12px}
+.linkbox{width:100%;font-size:11px;margin-top:4px}
 .bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc)}
 </style>
 </head>
 <body>
+<div id="login" hidden>
+  <form id="lform">
+    <h1>Satellite imagery download</h1>
+    <div class="mute">Administrator sign-in. Users: open the personal link you were given.</div>
+    <label>Password</label><input type="password" id="lpass" autocomplete="current-password" autofocus>
+    <button type="submit">Sign in</button>
+    <div id="lmsg" class="msg bad"></div>
+  </form>
+</div>
 <div id="wrap">
 <div id="side">
   <h1>Satellite imagery download</h1>
   <div class="mute" id="who">Loading…</div>
   <div class="bar"><i id="quota" style="width:0"></i></div>
+
+  <div id="adminBox" hidden>
+    <h2>Users <button class="sec" id="blogout" style="width:auto;float:right;margin:-4px 0 0;padding:3px 10px;font-size:12px">Sign out</button></h2>
+    <div id="ulist"></div>
+    <details style="margin-top:6px"><summary style="cursor:pointer;color:var(--acc)">+ Add user</summary>
+      <label>Name</label><input id="nuName">
+      <div class="row"><div><label>Min km²/order</label><input id="nuMin" type="number" value="0"></div>
+        <div><label>Max km²/order</label><input id="nuMax" type="number" value="25"></div></div>
+      <div class="row"><div><label>km²/month (images)</label><input id="nuMonth" type="number" value="200"></div>
+        <div><label>Mosaic tiles/month</label><input id="nuQuads" type="number" value="100"></div></div>
+      <button id="bnu">Create user + link</button>
+      <div id="numsg" class="msg"></div>
+    </details>
+  </div>
 
   <h2>1 · Area</h2>
   <div class="mute">Draw a polygon or rectangle on the map (toolbar, top-left). Area: <b id="area">–</b></div>
@@ -79,7 +108,10 @@ button:disabled{opacity:.45;cursor:default}button.sec{background:transparent;col
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script>
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const URL_TOKEN = new URLSearchParams(location.search).get("token") || "";
+const store = {get: k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+               set: (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} }};
+let TOKEN = URL_TOKEN || store.get("adm") || "";
 let API = ""; // same origin when served by the proxy; GitHub Pages reads the live address from config.json
 const ready = location.hostname.endsWith("github.io")
   ? fetch("config.json?t=" + Date.now()).then(r => r.json()).then(c => { API = c.api.replace(/\/$/, ""); }).catch(() => {})
@@ -125,10 +157,12 @@ async function loadMe() {
   try {
     me = await api("/api/me");
     $("who").textContent = `${me.name} · ${me.used_km2_month} / ${me.max_km2_month} km² used this month · area per order ${me.min_km2_order ? me.min_km2_order + "–" : "≤ "}${me.max_km2_order} km²`;
+    if (me.admin) { $("adminBox").hidden = false; loadUsers(); }
     $("who").textContent += ` · mosaic tiles ${me.used_quads_month}/${me.max_quads_month}`;
     $("quota").style.width = Math.min(100, 100 * me.used_km2_month / me.max_km2_month) + "%";
     $("bundle").innerHTML = Object.entries(me.bundles).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
   } catch (e) {
+    if (!URL_TOKEN) { store.set("adm", null); TOKEN = ""; showLogin(/invalid|disabled/.test(e.message) ? "Session expired — sign in again." : ""); return; }
     const why = !TOKEN ? "This link has no access code — open the full link you were given (it ends with ?token=…)."
       : /invalid|disabled/.test(e.message) ? "Access denied — this access code is not valid or was disabled."
       : "Server temporarily unreachable — wait a minute and reload the page.";
@@ -225,7 +259,47 @@ $("bquads").onclick = async () => {
       <a href="${API}/api/quad/${m.id}/${q.id}.tif?token=${encodeURIComponent(TOKEN)}">⬇ GeoTIFF</a></div>`).join("");
   } catch (e) { $("qmsg").className = "msg bad"; $("qmsg").textContent = e.message; }
 };
-loadMe(); loadOrders(); loadMosaics();
+// ---------------- admin
+function showLogin(msg) { $("login").hidden = false; $("lmsg").textContent = msg || ""; setTimeout(() => $("lpass").focus(), 50); }
+$("lform").onsubmit = async ev => {
+  ev.preventDefault(); $("lmsg").textContent = "";
+  try {
+    await ready;
+    const r = await fetch(API + "/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({password: $("lpass").value})});
+    const j = await r.json().catch(() => ({error: "server unreachable"}));
+    if (!r.ok) throw new Error(j.error || r.status);
+    TOKEN = j.token; store.set("adm", TOKEN); $("lpass").value = ""; $("login").hidden = true; start();
+  } catch (e) { $("lmsg").textContent = /fetch/i.test(e.message) ? "Server temporarily unreachable — try again in a minute." : e.message; }
+};
+$("blogout").onclick = async () => { try { await api("/api/logout", {}); } catch (e) {} store.set("adm", null); location.reload(); };
+const esc = t => String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const userLink = t => location.origin + location.pathname + "?token=" + t;
+async function loadUsers() {
+  try {
+    const {users} = await api("/api/admin/users");
+    $("ulist").innerHTML = users.length ? users.map(u => `<div class="urow ${u.disabled ? "off" : ""}">
+      <b>${esc(u.name)}</b> ${u.disabled ? "(disabled)" : ""}<br>
+      images ${u.used_km2_month}/${u.max_km2_month} km² · ${u.min_km2_order || 0}–${u.max_km2_order} km²/order · tiles ${u.used_quads_month}/${u.max_quads_month ?? 100}
+      <input class="linkbox" readonly value="${userLink(u.token)}" onclick="this.select()">
+      <div class="acts"><button class="sec" data-copy="${u.token}">Copy link</button>
+      <button class="sec" data-tog="${u.token}" data-act="${u.disabled ? "enable" : "disable"}">${u.disabled ? "Enable" : "Disable"}</button></div></div>`).join("")
+      : '<div class="mute">No users yet.</div>';
+    document.querySelectorAll("[data-copy]").forEach(b => b.onclick = () => { navigator.clipboard?.writeText(userLink(b.dataset.copy)); b.textContent = "Copied ✓"; });
+    document.querySelectorAll("[data-tog]").forEach(b => b.onclick = async () => { await api(`/api/admin/users/${b.dataset.tog}/${b.dataset.act}`, {}); loadUsers(); });
+  } catch (e) { $("ulist").textContent = e.message; }
+}
+$("bnu").onclick = async () => {
+  $("numsg").className = "msg";
+  try {
+    const r = await api("/api/admin/users", {name: $("nuName").value, min_km2_order: +$("nuMin").value, max_km2_order: +$("nuMax").value,
+      max_km2_month: +$("nuMonth").value, max_quads_month: +$("nuQuads").value});
+    $("numsg").className = "msg ok"; $("numsg").textContent = "Created. Link copied to clipboard.";
+    navigator.clipboard?.writeText(userLink(r.token)); $("nuName").value = ""; loadUsers();
+  } catch (e) { $("numsg").className = "msg bad"; $("numsg").textContent = e.message; }
+};
+function start() { loadMe(); loadOrders(); loadMosaics(); }
+if (TOKEN) start(); else showLogin();
 </script>
 </body>
 </html>
